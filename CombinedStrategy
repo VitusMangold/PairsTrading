@@ -1,0 +1,113 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import ta
+import matplotlib.pyplot as plt
+
+# Daten herunterladen
+start_date = '2012-10-01'
+end_date = '2014-01-01'
+stock1 = yf.download('MA', start=start_date, end=end_date)  # Mastercard
+stock2 = yf.download('V', start=start_date, end=end_date)   # Visa
+
+# ADX berechnen
+def calculate_adx(data):
+    data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Adj Close'], window=14)
+    return data
+
+# Indikatoren berechnen
+stock1 = calculate_adx(stock1)
+stock2 = calculate_adx(stock2)
+
+def calculate_momentum_indicators(data):
+    data['RSI'] = ta.momentum.rsi(data['Adj Close'], window=14)
+    return data
+
+stock1 = calculate_momentum_indicators(stock1)
+stock2 = calculate_momentum_indicators(stock2)
+
+# Momentum-Based Pair Trading
+def momentum_pair_trading(stock1, stock2):
+    signals = []
+    for i in range(len(stock1)):
+        if stock1['ADX'].iloc[i] > 25:  # Trending market
+            if stock1['RSI'].iloc[i] > 70:  # stock1 overbought
+                signals.append((stock1.index[i], 'Exit Long MA'))
+            elif stock2['RSI'].iloc[i] > 70:  # stock2 overbought
+                signals.append((stock1.index[i], 'Exit Long V'))
+            elif stock1['RSI'].iloc[i] < stock2['RSI'].iloc[i]:  # stronger momentum in stock2
+                signals.append((stock1.index[i], 'Enter Long V, Short MA'))
+            elif stock1['RSI'].iloc[i] > stock2['RSI'].iloc[i]:  # stronger momentum in stock1
+                signals.append((stock1.index[i], 'Enter Long MA, Short V'))
+    return signals
+
+# Mean Reversion Pair Trading
+def mean_reversion_pair_trading(stock1, stock2):
+    spread = stock1['Adj Close'] - stock2['Adj Close']
+    spread_mean = spread.rolling(window=20).mean()
+    spread_std = spread.rolling(window=20).std()
+    
+    signals = []
+    for i in range(len(spread)):
+        if stock1['ADX'].iloc[i] <= 25:  # Sideways market
+            if spread.iloc[i] > spread_mean.iloc[i] + 2 * spread_std.iloc[i]:
+                signals.append((stock1.index[i], 'Enter Long V, Short MA'))
+            elif spread.iloc[i] < spread_mean.iloc[i] - 2 * spread_std.iloc[i]:
+                signals.append((stock1.index[i], 'Enter Long MA, Short V'))
+            elif abs(spread.iloc[i] - spread_mean.iloc[i]) <= spread_std.iloc[i]:  # close to mean
+                signals.append((stock1.index[i], 'Exit Position'))
+    return signals
+
+# Signale generieren
+momentum_signals = momentum_pair_trading(stock1, stock2)
+mean_reversion_signals = mean_reversion_pair_trading(stock1, stock2)
+final_signals = momentum_signals + mean_reversion_signals
+final_signals = sorted(final_signals, key=lambda x: x[0])  # Sortieren nach Datum
+print("Generierte Signale:", final_signals)
+
+# Backtesting der Strategie
+def backtest_strategy(stock1, stock2, signals, transaction_cost=0.1):
+    returns = []
+    in_position = False
+    entry_date = None
+    position_type = None
+
+    for date, action in signals:
+        if 'Enter' in action and not in_position:
+            entry_date = date
+            position_type = action
+            in_position = True
+        elif 'Exit' in action and in_position:
+            entry_price1 = stock1['Adj Close'].loc[entry_date]
+            entry_price2 = stock2['Adj Close'].loc[entry_date]
+            exit_price1 = stock1['Adj Close'].loc[date]
+            exit_price2 = stock2['Adj Close'].loc[date]
+
+            # Berechnen der Rendite inkl. Transaktionskosten
+            if position_type == 'Enter Long V, Short MA':
+                gross_return = (exit_price1 - entry_price1) - (exit_price2 - entry_price2)
+            elif position_type == 'Enter Long MA, Short V':
+                gross_return = (exit_price2 - entry_price2) - (exit_price1 - entry_price1)
+            
+            net_return = gross_return - transaction_cost  # Abzug der Transaktionskosten
+            returns.append(net_return)
+            in_position = False
+
+    total_return = np.sum(returns)
+    print(f"Anzahl der Trades: {len(returns)}")
+    print(f"Renditen der einzelnen Trades: {returns}")
+    return total_return, returns
+
+# Berechnung der Strategie-Performance
+total_return, strategy_returns = backtest_strategy(stock1, stock2, final_signals)
+
+# Benchmarks und Alpha-Berechnung
+benchmark = yf.download('^GSPC', start=start_date, end=end_date)  # S&P 500 als Benchmark
+benchmark['Daily Return'] = benchmark['Adj Close'].pct_change()
+benchmark_return = (1 + benchmark['Daily Return']).prod() - 1
+alpha = total_return - benchmark_return
+
+# Ergebnisse
+print(f"Strategie-Rendite: {total_return:.2%}")
+print(f"S&P 500 Rendite: {benchmark_return:.2%}")
+print(f"Alpha der Strategie: {alpha:.2%}")
