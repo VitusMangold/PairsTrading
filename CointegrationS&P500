@@ -1,0 +1,82 @@
+import yfinance as yf
+import pandas as pd
+import itertools
+from statsmodels.tsa.stattools import coint
+import numpy as np
+from datetime import datetime
+import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
+
+# Step 1: Get today's date
+today = datetime.today().strftime('%Y-%m-%d')
+
+# Step 2: Fetch S&P 500 stocks and group by sector
+sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+sp500_table = pd.read_html(sp500_url)[0]
+sectors = sp500_table.groupby('GICS Sector')['Symbol'].apply(list).to_dict()
+
+# Step 3: Download data for all S&P 500 stocks once
+all_tickers = sp500_table['Symbol'].tolist()
+start_date = '2015-01-01'
+data = yf.download(all_tickers, start=start_date, end=today)['Adj Close']
+data = data.dropna(axis=1)  # Drop stocks with missing data
+
+# Step 4: Define a function to find cointegrated pairs within a sector using parallel processing
+def calculate_cointegration(stock1, stock2, data):
+    series1, series2 = data[stock1], data[stock2]
+    score, p_value, _ = coint(series1, series2)
+    return (stock1, stock2, p_value) if p_value < 0.05 else None
+
+def find_cointegrated_pairs_parallel(data):
+    pairs = []
+    stocks = data.columns
+    # Run cointegration tests in parallel
+    results = Parallel(n_jobs=-1)(delayed(calculate_cointegration)(stock1, stock2, data)
+                                  for stock1, stock2 in itertools.combinations(stocks, 2))
+    # Filter out None results and sort by p-value
+    pairs = [result for result in results if result is not None]
+    return sorted(pairs, key=lambda x: x[2])
+
+# Step 5: Loop through each sector, find top cointegrated pairs, and plot results
+# Create a plot grid for all sectors
+fig, axes = plt.subplots(len(sectors), 1, figsize=(12, 5 * len(sectors)))
+if len(sectors) == 1:
+    axes = [axes]  # Ensure axes is always a list for single sector case
+
+for idx, (sector, tickers) in enumerate(sectors.items()):
+    print(f"Processing sector: {sector}")
+    
+    # Filter for tickers that exist in the downloaded data
+    tickers = [ticker for ticker in tickers if ticker in data.columns]
+    if not tickers:
+        print(f"No valid data available for sector: {sector}")
+        continue  # Skip if no valid tickers remain
+    
+    # Filter data for the sector
+    sector_data = data[tickers].dropna(axis=1)  # Filter for the sector and drop any columns with NaNs
+    
+    # Find the most cointegrated pairs within this sector
+    cointegrated_pairs = find_cointegrated_pairs_parallel(sector_data)
+    top_pairs = cointegrated_pairs[:2]  # Select top 2 pairs for visualization
+    
+    # Display the top pairs for each sector
+    print(f"Top Cointegrated Pairs in {sector}:")
+    for pair in top_pairs:
+        print(f"  Pair: {pair[0]} & {pair[1]}, p-value: {pair[2]:.5f}")
+    
+    # Plot the top pairs for the sector
+    for pair in top_pairs:
+        stock1, stock2, p_value = pair
+        axes[idx].plot(sector_data[stock1], label=f"{stock1}", color="blue")
+        axes[idx].plot(sector_data[stock2], label=f"{stock2}", color="green")
+    
+    # Formatting each subplot
+    axes[idx].set_title(f"Top Cointegrated Pairs in {sector}")
+    axes[idx].set_xlabel("Date")
+    axes[idx].set_ylabel("Adjusted Close Price")
+    axes[idx].legend(loc="best")
+    axes[idx].grid()
+
+# Adjust layout and show plot
+plt.tight_layout()
+plt.show()
