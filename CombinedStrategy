@@ -6,18 +6,18 @@ import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display, clear_output
 
-# Daten herunterladen
+# Download data
 start_date = '2012-10-01'
 end_date = '2024-01-01'
 stock1 = yf.download('MA', start=start_date, end=end_date)  # Mastercard (MA)
 stock2 = yf.download('V', start=start_date, end=end_date)   # Visa (V)
 
-# ADX berechnen
+# Calculate ADX
 def calculate_adx(data):
     data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Adj Close'], window=14)
     return data
 
-# Indikatoren berechnen
+# Calculate indicators
 stock1 = calculate_adx(stock1)
 stock2 = calculate_adx(stock2)
 
@@ -29,17 +29,17 @@ stock1 = calculate_momentum_indicators(stock1)
 stock2 = calculate_momentum_indicators(stock2)
 
 # Momentum-Based Pair Trading
-def momentum_pair_trading(stock1, stock2, rsi_upper=70, rsi_lower=30):
+def momentum_pair_trading(stock1, stock2, rsi_upper=75, rsi_lower=25):
     signals = []
     for i in range(len(stock1)):
-        if stock1['ADX'].iloc[i] > 25:  # Trendmarkt
-            if stock1['RSI'].iloc[i] > rsi_upper:  # stock1 überkauft
+        if stock1['ADX'].iloc[i] > 25:  # Trending market
+            if stock1['RSI'].iloc[i] > rsi_upper:  # stock1 overbought
                 signals.append((stock1.index[i], 'Exit Long MA'))
-            elif stock2['RSI'].iloc[i] > rsi_upper:  # stock2 überkauft
+            elif stock2['RSI'].iloc[i] > rsi_upper:  # stock2 overbought
                 signals.append((stock1.index[i], 'Exit Long V'))
-            elif stock1['RSI'].iloc[i] < rsi_lower and stock1['RSI'].iloc[i] < stock2['RSI'].iloc[i]:  # stärkere Dynamik in stock2
+            elif stock1['RSI'].iloc[i] < rsi_lower and stock1['RSI'].iloc[i] < stock2['RSI'].iloc[i]:  # stronger momentum in stock2
                 signals.append((stock1.index[i], 'Enter Long V, Short MA'))
-            elif stock1['RSI'].iloc[i] > rsi_lower and stock1['RSI'].iloc[i] > stock2['RSI'].iloc[i]:  # stärkere Dynamik in stock1
+            elif stock1['RSI'].iloc[i] > rsi_lower and stock1['RSI'].iloc[i] > stock2['RSI'].iloc[i]:  # stronger momentum in stock1
                 signals.append((stock1.index[i], 'Enter Long MA, Short V'))
     return signals
 
@@ -51,16 +51,16 @@ def mean_reversion_pair_trading(stock1, stock2):
     
     signals = []
     for i in range(len(spread)):
-        if stock1['ADX'].iloc[i] <= 25:  # Seitwärtsmarkt
+        if stock1['ADX'].iloc[i] <= 25:  # Sideways market
             if spread.iloc[i] > spread_mean.iloc[i] + 2 * spread_std.iloc[i]:
                 signals.append((stock1.index[i], 'Enter Long V, Short MA'))
             elif spread.iloc[i] < spread_mean.iloc[i] - 2 * spread_std.iloc[i]:
                 signals.append((stock1.index[i], 'Enter Long MA, Short V'))
-            elif abs(spread.iloc[i] - spread_mean.iloc[i]) <= spread_std.iloc[i]:  # nahe am Mittelwert
+            elif abs(spread.iloc[i] - spread_mean.iloc[i]) <= spread_std.iloc[i]:  # close to mean
                 signals.append((stock1.index[i], 'Exit Position'))
     return signals
 
-# Angepasste Backtest-Funktion mit Stop-Loss und Take-Profit
+# Adjusted backtest function with stop-loss and take-profit
 def backtest_strategy_with_risk_management(stock1, stock2, signals, transaction_cost=0.1, stop_loss_percentage=0.02, take_profit_percentage=0.05):
     returns = []
     in_position = False
@@ -70,34 +70,34 @@ def backtest_strategy_with_risk_management(stock1, stock2, signals, transaction_
 
     for date, action in signals:
         if 'Enter' in action and not in_position:
-            # Einstieg in Position
+            # Entering position
             entry_price1 = stock1['Adj Close'].loc[date]
             entry_price2 = stock2['Adj Close'].loc[date]
             position_type = action
             in_position = True
-            print(f"Einstieg bei {date}: {position_type} (Preis MA: {entry_price1}, Preis V: {entry_price2})")
+            print(f"Entering at {date}: {position_type} (Price MA: {entry_price1}, Price V: {entry_price2})")
 
         elif in_position:
-            # Berechnung des aktuellen Preises
+            # Calculate current price
             current_price1 = stock1['Adj Close'].loc[date]
             current_price2 = stock2['Adj Close'].loc[date]
 
-            # Berechnung der Rendite
+            # Calculate return
             if position_type == 'Enter Long V, Short MA':
                 current_return = (current_price1 - entry_price1) - (current_price2 - entry_price2)
             elif position_type == 'Enter Long MA, Short V':
                 current_return = (current_price2 - entry_price2) - (current_price1 - entry_price1)
             
-            # Überprüfung auf Stop-Loss und Take-Profit
+            # Check for stop-loss and take-profit
             if current_return <= -stop_loss_percentage * entry_price1 or current_return >= take_profit_percentage * entry_price1:
                 net_return = current_return - transaction_cost
                 returns.append(net_return)
-                print(f"Schließen bei {date} wegen Stop-Loss/Take-Profit: Netto-Rendite: {net_return:.2%}")
-                in_position = False  # Position schließen
+                print(f"Closing at {date} due to Stop-Loss/Take-Profit: Net Return: {net_return:.2%}")
+                in_position = False  # Close position
             
-            # Exit-Bedingungen verarbeiten
+            # Process exit conditions
             if 'Exit' in action:
-                # Wenn das Exit-Signal verarbeitet wird
+                # When exit signal is processed
                 exit_price1 = current_price1
                 exit_price2 = current_price2
                 
@@ -108,49 +108,49 @@ def backtest_strategy_with_risk_management(stock1, stock2, signals, transaction_
 
                 net_return = gross_return - transaction_cost
                 returns.append(net_return)
-                print(f"Ausstieg bei {date}: Netto-Rendite: {net_return:.2%}")
-                in_position = False  # Position schließen
+                print(f"Exiting at {date}: Net Return: {net_return:.2%}")
+                in_position = False  # Close position
 
     total_return = np.sum(returns)
-    print(f"\nAnzahl der Trades: {len(returns)}")
-    print(f"Renditen der einzelnen Trades: {returns}")
+    print(f"\nNumber of trades: {len(returns)}")
+    print(f"Returns of individual trades: {returns}")
     return total_return, returns
 
-# Interaktive Funktion zur Berechnung der Signale und zur Anzeige von Renditen und Alpha
+# Interactive function to calculate signals and display returns and alpha
 def update_signals(rsi_upper, rsi_lower):
-    # Kombinierte Signale generieren
+    # Generate combined signals
     momentum_signals = momentum_pair_trading(stock1, stock2, rsi_upper, rsi_lower)
     mean_reversion_signals = mean_reversion_pair_trading(stock1, stock2)
     
-    # Alle Signale zusammenführen und nach Datum sortieren
+    # Merge all signals and sort by date
     final_signals = momentum_signals + mean_reversion_signals
-    final_signals = sorted(final_signals, key=lambda x: x[0])  # Sortieren nach Datum
+    final_signals = sorted(final_signals, key=lambda x: x[0])  # Sort by date
 
-    # Ausgabe der Signale
-    print("Generierte Signale:", final_signals)
+    # Output signals
+    print("Generated signals:", final_signals)
 
-    # Backtest der Strategie
+    # Backtest the strategy
     total_return, strategy_returns = backtest_strategy_with_risk_management(stock1, stock2, final_signals)
 
-    # Benchmarks und Alpha-Berechnung
-    benchmark = yf.download('^GSPC', start=start_date, end=end_date)  # S&P 500 als Benchmark
+    # Benchmark and alpha calculation
+    benchmark = yf.download('^GSPC', start=start_date, end=end_date)  # S&P 500 as benchmark
     benchmark['Daily Return'] = benchmark['Adj Close'].pct_change()
     benchmark_return = (1 + benchmark['Daily Return']).prod() - 1
     alpha = total_return - benchmark_return
 
-    # Ausgabe der Rendite und Alpha
-    print(f"Strategie-Rendite: {total_return:.2%}")
-    print(f"S&P 500 Rendite: {benchmark_return:.2%}")
-    print(f"Alpha der Strategie: {alpha:.2%}")
+    # Output return and alpha
+    print(f"Strategy Return: {total_return:.2%}")
+    print(f"S&P 500 Return: {benchmark_return:.2%}")
+    print(f"Strategy Alpha: {alpha:.2%}")
 
-# Widgets für die RSI-Grenzen
-rsi_upper_slider = widgets.IntSlider(value=70, min=50, max=100, step=1, description='RSI Upper Bound:')
-rsi_lower_slider = widgets.IntSlider(value=30, min=0, max=50, step=1, description='RSI Lower Bound:')
+# Widgets for RSI boundaries
+rsi_upper_slider = widgets.IntSlider(value=75, min=50, max=100, step=1, description='RSI Upper Bound:')
+rsi_lower_slider = widgets.IntSlider(value=25, min=0, max=50, step=1, description='RSI Lower Bound:')
 
-# Button zur Aktualisierung der Signale
+# Button to update signals
 update_button = widgets.Button(description="Update Signals")
 
-# Funktion, die beim Drücken des Buttons ausgeführt wird
+# Function executed when the button is pressed
 def on_button_clicked(b):
     clear_output(wait=True)
     display(rsi_upper_slider, rsi_lower_slider, update_button)
@@ -158,5 +158,5 @@ def on_button_clicked(b):
 
 update_button.on_click(on_button_clicked)
 
-# Anzeige der Widgets
+# Display the widgets
 display(rsi_upper_slider, rsi_lower_slider, update_button)
