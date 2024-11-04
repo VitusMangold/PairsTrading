@@ -1,0 +1,100 @@
+# Cell 2: Indicator Calculation
+def calculate_indicators(data):
+    try:
+        data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Adj Close'], window=14)
+    except Exception as e:
+        print("Error calculating ADX:", e)
+        data['ADX'] = 0
+    data['Volatility'] = data['Adj Close'].rolling(window=20).std()
+    data['Adaptive_Smoothing_Window'] = (20 / data['Volatility']).clip(lower=3, upper=10).fillna(3)
+    average_smoothing_window = int(data['Adaptive_Smoothing_Window'].mean())
+    data['ADX_Smooth'] = data['ADX'].rolling(window=average_smoothing_window).mean()
+    data['50_MA'] = data['Adj Close'].rolling(window=50).mean()
+    data['200_MA'] = data['Adj Close'].rolling(window=200).mean()
+    data['BB_Upper'] = data['Adj Close'].rolling(window=20).mean() + (data['Adj Close'].rolling(window=20).std() * 2)
+    data['BB_Lower'] = data['Adj Close'].rolling(window=20).mean() - (data['Adj Close'].rolling(window=20).std() * 2)
+    data['BB_Width'] = data['BB_Upper'] - data['BB_Lower']
+    data['RSI'] = ta.momentum.rsi(data['Adj Close'], window=14)
+    return data
+
+# Apply indicator calculation
+stock1 = calculate_indicators(stock1)
+stock2 = calculate_indicators(stock2)
+
+# Cell 3: Regime Detection with Buffer Zone
+trending_threshold = 30
+non_trending_threshold = 20
+in_trending = False  # Start with mean-reversion as default
+
+# Modify detect_regime to accept additional threshold parameters
+def detect_regime(data, trending_threshold, non_trending_threshold):
+    in_trending = False  # Use a local variable for trending status
+    regimes = []
+    for i in range(len(data)):
+        adx_smooth = data['ADX_Smooth'].iloc[i]
+        ma_50 = data['50_MA'].iloc[i]
+        ma_200 = data['200_MA'].iloc[i]
+        bb_width = data['BB_Width'].iloc[i]
+        bb_avg_width = data['BB_Width'].rolling(window=50).mean().iloc[i]
+        
+        # Buffer Zone Logic to Determine Regime
+        if in_trending and adx_smooth < non_trending_threshold:
+            in_trending = False  # Switch to sideways regime
+        elif not in_trending and adx_smooth > trending_threshold:
+            in_trending = True  # Switch to trending regime
+
+        # Apply additional conditions for confirmation
+        if in_trending:
+            if (ma_50 > ma_200) and (bb_width > bb_avg_width):
+                regimes.append('Trending')
+            else:
+                regimes.append('Sideways')
+        else:
+            if (abs(ma_50 - ma_200) < 0.5) and (bb_width < bb_avg_width):
+                regimes.append('Sideways')
+            else:
+                regimes.append('Trending')
+
+    data['Regime'] = regimes
+    return data
+
+# Apply regime detection to both stocks with threshold parameters
+stock1 = detect_regime(stock1, trending_threshold, non_trending_threshold)
+stock2 = detect_regime(stock2, trending_threshold, non_trending_threshold)
+# Revised Signal Generation
+def generate_signals(stock1, stock2, rsi_overbought=70, spread_multiplier=2, spread_window=20):
+    signals = []
+    spread = stock1['Adj Close'] - stock2['Adj Close']
+    spread_mean = spread.rolling(window=spread_window).mean()
+    spread_std = spread.rolling(window=spread_window).std()
+    for i in range(len(stock1)):
+        regime = stock1['Regime'].iloc[i]
+        rsi1 = stock1['RSI'].iloc[i]
+        rsi2 = stock2['RSI'].iloc[i]
+        mean_val = spread_mean.iloc[i]
+        std_val = spread_std.iloc[i]
+        current_spread = spread.iloc[i]
+        if pd.isna(mean_val) or pd.isna(std_val) or pd.isna(rsi1) or pd.isna(rsi2):
+            continue
+        if regime == 'Trending':
+            if rsi1 > rsi_overbought:
+                signals.append((stock1.index[i], 'Exit Long MA'))
+            elif rsi2 > rsi_overbought:
+                signals.append((stock1.index[i], 'Exit Long V'))
+            elif rsi1 < rsi2:
+                signals.append((stock1.index[i], 'Enter Long V, Short MA'))
+            elif rsi1 > rsi2:
+                signals.append((stock1.index[i], 'Enter Long MA, Short V'))
+        elif regime == 'Sideways':
+            if current_spread > mean_val + spread_multiplier * std_val:
+                signals.append((stock1.index[i], 'Enter Long V, Short MA'))
+            elif current_spread < mean_val - spread_multiplier * std_val:
+                signals.append((stock1.index[i], 'Enter Long MA, Short V'))
+            elif abs(current_spread - mean_val) <= std_val:
+                signals.append((stock1.index[i], 'Exit Position'))
+    return signals
+
+# Generate signals
+signals_list = generate_signals(stock1, stock2)
+signals_list = sorted(signals_list, key=lambda x: x[0])
+print("Generated Signals Sample:", signals_list[:5])
