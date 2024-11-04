@@ -1,0 +1,295 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import ta  # Technical Analysis library
+import matplotlib.pyplot as plt
+import ipywidgets as widgets  # For interactive elements in Jupyter notebooks
+from IPython.display import display, clear_output
+
+# --- Download Data ---
+
+# Set the time range for data download
+start_date = '2015-10-01'
+end_date = '2024-01-01'
+
+# Download historical stock data for Mastercard (MA) and Visa (V)
+stock1 = yf.download('MA', start=start_date, end=end_date)  
+stock2 = yf.download('V', start=start_date, end=end_date) 
+
+# --- Indicator Calculations ---
+
+# Calculate the Average Directional Index (ADX) for trend strength
+def calculate_adx(data):
+    data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Adj Close'], window=14)
+    return data
+
+# Calculate a Moving Average (MA) to smooth out price trends
+def calculate_moving_average(data, window=20):
+    data['MA'] = data['Adj Close'].rolling(window=window).mean()
+    return data
+
+# Apply ADX and Moving Average calculations to both stocks
+stock1 = calculate_adx(stock1)
+stock2 = calculate_adx(stock2)
+stock1 = calculate_moving_average(stock1)
+stock2 = calculate_moving_average(stock2)
+
+# Calculate the Relative Strength Index (RSI) for momentum analysis
+def calculate_momentum_indicators(data):
+    data['RSI'] = ta.momentum.rsi(data['Adj Close'], window=14)
+    return data
+
+# Apply RSI calculation to both stocks
+stock1 = calculate_momentum_indicators(stock1)
+stock2 = calculate_momentum_indicators(stock2)
+
+# --- Momentum Pair Trading Strategy ---
+
+# Generate trading signals based on ADX and RSI values for momentum trading
+def momentum_pair_trading(stock1, stock2, rsi_upper=75, rsi_lower=25):
+    signals = []
+    for i in range(len(stock1)):
+        # Check if ADX is above 25, indicating a strong trend
+        if stock1['ADX'].iloc[i] > 25:
+            # Signal to exit if RSI crosses above the upper threshold
+            if stock1['RSI'].iloc[i] > rsi_upper:
+                signals.append((stock1.index[i], 'Exit Long MA'))
+            elif stock2['RSI'].iloc[i] > rsi_upper:
+                signals.append((stock1.index[i], 'Exit Long V'))
+            # Signal to enter if RSI crosses below the lower threshold    
+            elif stock1['RSI'].iloc[i] < rsi_lower:
+                signals.append((stock1.index[i], 'Enter Long MA'))
+            elif stock2['RSI'].iloc[i] < rsi_lower:
+                signals.append((stock1.index[i], 'Enter Long V'))
+    return signals
+
+# --- Mean-Reversion Pair Trading Strategy ---
+
+# Generate mean-reversion trading signals based on the spread between the two stocks
+def mean_reversion_pair_trading(stock1, stock2):
+    # Calculate the spread between stock1 and stock2
+    spread = stock1['Adj Close'] - stock2['Adj Close']
+    # Calculate the rolling mean and standard deviation of the spread
+    spread_mean = spread.rolling(window=20).mean()
+    spread_std = spread.rolling(window=20).std()
+    
+    signals = []
+    for i in range(len(spread)):
+        # Check if ADX is 25 or below, indicating a weak trend
+        if stock1['ADX'].iloc[i] <= 25:
+            # Signal to enter long or short positions based on the spread threshold
+            if spread.iloc[i] > spread_mean.iloc[i] + 2 * spread_std.iloc[i]:
+                signals.append((stock1.index[i], 'Enter Long V, Short MA'))
+            elif spread.iloc[i] < spread_mean.iloc[i] - 2 * spread_std.iloc[i]:
+                signals.append((stock1.index[i], 'Enter Long MA, Short V'))
+            # Signal to exit if the spread is close to the mean
+            elif abs(spread.iloc[i] - spread_mean.iloc[i]) <= spread_std.iloc[i]:
+                signals.append((stock1.index[i], 'Exit Position'))
+    return signals
+
+# --- Backtesting Strategy with Risk Management ---
+
+# Function to backtest trading strategy with stop-loss and take-profit conditions
+def backtest_strategy_with_risk_management(stock1, stock2, signals, transaction_cost=0.1, stop_loss_percentage=0.05, take_profit_percentage=0.1):
+    returns = []
+    in_position = False
+    entry_price1 = None
+    entry_price2 = None
+    position_type = None
+
+    for date, action in signals:
+        # Enter position if a new signal appears and no position is currently held
+        if 'Enter' in action and not in_position:
+            entry_price1 = stock1['Adj Close'].loc[date]
+            entry_price2 = stock2['Adj Close'].loc[date]
+            position_type = action
+            in_position = True
+
+        elif in_position:
+            # Calculate current price for the held positions
+            current_price1 = stock1['Adj Close'].loc[date]
+            current_price2 = stock2['Adj Close'].loc[date]
+
+             # Calculate returns based on the position type
+            if position_type == 'Enter Long V, Short MA':
+                current_return = (current_price1 - entry_price1) - (current_price2 - entry_price2)
+            elif position_type == 'Enter Long MA, Short V':
+                current_return = (current_price2 - entry_price2) - (current_price1 - entry_price1)
+
+            # Check stop-loss and take-profit conditions
+            if current_return <= -stop_loss_percentage * entry_price1 or current_return >= take_profit_percentage * entry_price1:
+                net_return = current_return - transaction_cost
+                returns.append(net_return)
+                in_position = False
+            
+            # Exit position if an exit signal is triggered
+            if 'Exit' in action:
+                exit_price1 = current_price1
+                exit_price2 = current_price2
+                
+                # Calculate returns for the exit action
+                if position_type == 'Enter Long V, Short MA':
+                    gross_return = (exit_price1 - entry_price1) - (exit_price2 - entry_price2)
+                elif position_type == 'Enter Long MA, Short V':
+                    gross_return = (exit_price2 - entry_price2) - (exit_price1 - entry_price1)
+
+                net_return = gross_return - transaction_cost
+                returns.append(net_return)
+                in_position = False
+
+    # Sum up all returns to calculate the total return
+    total_return = np.sum(returns)
+    return total_return, returns
+
+
+# --- Calculate Performance Metrics ---
+
+# Function to calculate Sharpe ratio and maximum drawdown for performance evaluation
+def calculate_performance_metrics(returns):
+    risk_free_rate = 0.01  # Assume a risk-free rate of 1%
+    excess_returns = np.array(returns) - risk_free_rate / 252
+    sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252)
+    
+    cumulative_returns = np.cumsum(returns)
+    drawdown = np.maximum.accumulate(cumulative_returns) - cumulative_returns
+    max_drawdown = np.max(drawdown)
+    
+    return sharpe_ratio, max_drawdown
+
+# --- Interactive Function to Display Results ---
+
+# Update function to generate and display trading signals, returns, and performance metrics
+def update_signals(rsi_upper, rsi_lower):
+    momentum_signals = momentum_pair_trading(stock1, stock2, rsi_upper, rsi_lower)
+    mean_reversion_signals = mean_reversion_pair_trading(stock1, stock2)
+    
+    # Combine and sort all signals by date
+    final_signals = momentum_signals + mean_reversion_signals
+    final_signals = sorted(final_signals, key=lambda x: x[0])
+
+    # Backtest the strategy and calculate total returns and individual returns
+    total_return, strategy_returns = backtest_strategy_with_risk_management(stock1, stock2, final_signals)
+
+    # Download S&P 500 data for benchmark comparison
+    benchmark = yf.download('^GSPC', start=start_date, end=end_date)
+    benchmark['Daily Return'] = benchmark['Adj Close'].pct_change()
+    benchmark_return = (1 + benchmark['Daily Return']).prod() - 1
+    alpha = total_return - benchmark_return
+
+     # Calculate Sharpe ratio and maximum drawdown for the strategy
+    sharpe_ratio, max_drawdown = calculate_performance_metrics(strategy_returns)
+
+    # Display strategy performance
+    print(f"Strategy Return: {total_return:.2%}")
+    print(f"S&P 500 Return: {benchmark_return:.2%}")
+    print(f"Strategy Alpha: {alpha:.2%}")
+    print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"Maximum Drawdown: {max_drawdown:.2f}")
+
+# --- Widgets for Interactive RSI Threshold Adjustment ---
+
+# Create sliders for upper and lower RSI bounds
+rsi_upper_slider = widgets.IntSlider(value=80, min=50, max=100, step=1, description='RSI Upper Bound:')
+rsi_lower_slider = widgets.IntSlider(value=20, min=0, max=50, step=1, description='RSI Lower Bound:')
+
+# Button to update signals based on slider values
+update_button = widgets.Button(description="Update Signals")
+
+# Function to handle button click events
+def on_button_clicked(b):
+    clear_output(wait=True)
+    display(rsi_upper_slider, rsi_lower_slider, update_button)
+    update_signals(rsi_upper_slider.value, rsi_lower_slider.value)
+
+update_button.on_click(on_button_clicked)
+
+display(rsi_upper_slider, rsi_lower_slider, update_button)
+
+
+# Create a plot to visualize the adjusted close prices of Mastercard (MA) and Visa (V)
+plt.figure(figsize=(14, 7))
+plt.plot(stock1['Adj Close'], label='MA Adjusted Close', color='blue', alpha=0.6)
+plt.plot(stock2['Adj Close'], label='V Adjusted Close', color='orange', alpha=0.6)
+plt.title('Adjusted Close Prices of MA and V')
+plt.xlabel('Date')
+plt.ylabel('Adjusted Close Price')
+plt.legend()
+plt.grid()
+plt.show()
+
+
+# Calculation of the Z-Score spread between Mastercard (MA) and Visa (V)
+spread = stock1['Adj Close'] - stock2['Adj Close']  # Price difference (spread)
+rolling_mean = spread.rolling(window=20).mean()     # Rolling mean over 20 days
+rolling_std = spread.rolling(window=20).std()       # Rolling standard deviation over 20 days
+
+# Calculation of the Z-Score
+z_score = (spread - rolling_mean) / rolling_std
+
+# Plot of the Z-Score spread
+plt.figure(figsize=(12, 6))
+plt.plot(stock1.index, z_score, label='Z-Score Spread (MA - V)', color='purple')
+plt.axhline(0, color='black', linestyle='--', linewidth=1)      # Zero line
+plt.axhline(2, color='red', linestyle='--', linewidth=1, label='+2 Std Dev')   # Upper threshold
+plt.axhline(-2, color='green', linestyle='--', linewidth=1, label='-2 Std Dev') # Lower threshold
+plt.title('Z-Score Spread between Mastercard and Visa')
+plt.xlabel('Date')
+plt.ylabel('Z-Score')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+# Average Directional Index (ADX) for Mastercard (MA) and Visa (V) over time
+plt.figure(figsize=(14, 7))
+plt.plot(stock1['ADX'], label='MA ADX', color='blue', alpha=0.6)
+plt.plot(stock2['ADX'], label='V ADX', color='orange', alpha=0.6)
+plt.title('ADX Indicator for MA and V')
+plt.xlabel('Date')
+plt.ylabel('ADX Value')
+plt.axhline(25, color='red', linestyle='--', label='Trending Threshold (25)')
+plt.legend()
+plt.grid()
+plt.show()
+
+
+# Relative Strength Index (RSI) for Mastercard (MA) and Visa (V) over time, 
+plt.figure(figsize=(14, 7))
+plt.plot(stock1['RSI'], label='MA RSI', color='blue', alpha=0.6)
+plt.plot(stock2['RSI'], label='V RSI', color='orange', alpha=0.6)
+plt.title('RSI Indicator for MA and V')
+plt.xlabel('Date')
+plt.ylabel('RSI Value')
+plt.axhline(80, color='red', linestyle='--', label='Overbought Threshold (80)')
+plt.axhline(27, color='green', linestyle='--', label='Oversold Threshold (27)')
+plt.legend()
+plt.grid()
+plt.show()
+
+
+
+# Trading signals based on momentum and mean reversion strategies, 
+# Z-Score of the spread between Mastercard (MA) and Visa (V) along with the entry and exit signals
+momentum_signals = momentum_pair_trading(stock1, stock2, rsi_upper_slider.value, rsi_lower_slider.value)
+mean_reversion_signals = mean_reversion_pair_trading(stock1, stock2)
+signals = momentum_signals + mean_reversion_signals
+signals = sorted(signals, key=lambda x: x[0])  # Sort signals by date
+
+entry_long_ma = [date for date, action in signals if 'Enter Long MA' in action]
+entry_long_v = [date for date, action in signals if 'Enter Long V' in action]
+exit_positions = [date for date, action in signals if 'Exit' in action]
+
+plt.figure(figsize=(12, 6))
+plt.plot(stock1.index, z_score, label='Z-Score Spread (MA - V)', color='purple')
+plt.axhline(2, color='red', linestyle='--', linewidth=1, label='+2 Std Dev')
+plt.axhline(-2, color='green', linestyle='--', linewidth=1, label='-2 Std Dev')
+plt.scatter(entry_long_ma, [z_score.loc[date] for date in entry_long_ma], marker='^', color='blue', label='Enter Long MA', s=100)
+plt.scatter(entry_long_v, [z_score.loc[date] for date in entry_long_v], marker='^', color='orange', label='Enter Long V', s=100)
+plt.scatter(exit_positions, [z_score.loc[date] for date in exit_positions], marker='v', color='red', label='Exit Position', s=100)
+plt.title('Z-Score with Trading Signals')
+plt.xlabel('Date')
+plt.ylabel('Z-Score')
+plt.legend()
+plt.grid(True)
+plt.show()
+
