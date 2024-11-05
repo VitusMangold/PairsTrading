@@ -1,0 +1,129 @@
+import yfinance as yf 
+import pandas as pd
+import numpy as np
+import ta  # Technical Analysis library
+import matplotlib.pyplot as plt
+import ipywidgets as widgets  # For interactive elements in Jupyter notebooks
+from IPython.display import display, clear_output
+
+# --- Download Data ---
+start_date = '2015-10-01'
+end_date = '2024-01-01'
+
+stock1 = yf.download('MA', start=start_date, end=end_date)  
+stock2 = yf.download('V', start=start_date, end=end_date) 
+vix = yf.download('^VIX', start=start_date, end=end_date)
+
+# --- Indicator Calculations ---
+def calculate_adx(data):
+    data['ADX'] = ta.trend.adx(data['High'], data['Low'], data['Adj Close'], window=14)
+    return data
+
+def calculate_moving_average(data, window=20):
+    data['MA'] = data['Adj Close'].rolling(window=window).mean()
+    return data
+
+def calculate_momentum_indicators(data):
+    data['RSI'] = ta.momentum.rsi(data['Adj Close'], window=14)
+    return data
+
+# Apply calculations
+stock1 = calculate_adx(stock1)
+stock2 = calculate_adx(stock2)
+stock1 = calculate_moving_average(stock1)
+stock2 = calculate_moving_average(stock2)
+stock1 = calculate_momentum_indicators(stock1)
+stock2 = calculate_momentum_indicators(stock2)
+
+# --- Parameters and Starting Capital ---
+start_capital = 100000  # Define the starting capital
+max_risk_per_trade = 0.01  # 1% of capital risk per trade
+
+# --- Function for Dynamic Position Sizing based on Volatility and Momentum ---
+def calculate_position_size(stock, entry_price, stop_loss_price, momentum_strength):
+    risk_per_trade = start_capital * max_risk_per_trade
+    position_size = risk_per_trade / abs(entry_price - stop_loss_price)
+    
+    # Scale position size with momentum (higher momentum allows larger positions)
+    momentum_factor = min(2, max(0.5, momentum_strength / 30))  # Normalize to 0.5-2 range
+    adjusted_position_size = position_size * momentum_factor
+    
+    return min(adjusted_position_size, start_capital / entry_price)  # Limit to max possible shares
+
+# --- Adjusted Backtest Function ---
+def backtest_strategy_with_dynamic_position_sizing(stock1, stock2, signals, transaction_cost=0.1, trailing_stop_percentage=0.05, take_profit_percentage=0.1):
+    capital = start_capital
+    returns = []
+    in_position = False
+    entry_price1 = None
+    entry_price2 = None
+    position_size1 = None
+    position_size2 = None
+    position_type = None
+    trailing_stop_price1 = None
+    trailing_stop_price2 = None
+
+    for date, action in signals:
+        # Enter position if a new signal appears and no position is currently held
+        if 'Enter' in action and not in_position:
+            entry_price1 = stock1['Adj Close'].loc[date]
+            entry_price2 = stock2['Adj Close'].loc[date]
+            position_type = action
+            in_position = True
+            
+            # Set trailing stop and calculate position size based on momentum and ADX
+            adx1 = stock1['ADX'].loc[date]
+            adx2 = stock2['ADX'].loc[date]
+            
+            if position_type == 'Enter Long V, Short MA':
+                trailing_stop_price1 = entry_price1 * (1 - trailing_stop_percentage)
+                trailing_stop_price2 = entry_price2 * (1 + trailing_stop_percentage)
+                position_size1 = calculate_position_size(stock1, entry_price1, trailing_stop_price1, adx1)
+                position_size2 = calculate_position_size(stock2, entry_price2, trailing_stop_price2, adx2)
+            elif position_type == 'Enter Long MA, Short V':
+                trailing_stop_price1 = entry_price1 * (1 + trailing_stop_percentage)
+                trailing_stop_price2 = entry_price2 * (1 - trailing_stop_percentage)
+                position_size1 = calculate_position_size(stock1, entry_price1, trailing_stop_price1, adx1)
+                position_size2 = calculate_position_size(stock2, entry_price2, trailing_stop_price2, adx2)
+
+        elif in_position:
+            # Calculate current price for the held positions
+            current_price1 = stock1['Adj Close'].loc[date]
+            current_price2 = stock2['Adj Close'].loc[date]
+
+            # Update trailing stop
+            if position_type == 'Enter Long V, Short MA':
+                trailing_stop_price1 = max(trailing_stop_price1, current_price1 * (1 - trailing_stop_percentage))
+                trailing_stop_price2 = min(trailing_stop_price2, current_price2 * (1 + trailing_stop_percentage))
+                current_return = (current_price1 - entry_price1) * position_size1 - (current_price2 - entry_price2) * position_size2
+            elif position_type == 'Enter Long MA, Short V':
+                trailing_stop_price1 = min(trailing_stop_price1, current_price1 * (1 + trailing_stop_percentage))
+                trailing_stop_price2 = max(trailing_stop_price2, current_price2 * (1 - trailing_stop_percentage))
+                current_return = (current_price2 - entry_price2) * position_size2 - (current_price1 - entry_price1) * position_size1
+
+            # Exit conditions
+            if (position_type == 'Enter Long V, Short MA' and (current_price1 <= trailing_stop_price1 or current_price2 >= trailing_stop_price2)) or \
+               (position_type == 'Enter Long MA, Short V' and (current_price1 >= trailing_stop_price1 or current_price2 <= trailing_stop_price2)) or \
+               current_return >= take_profit_percentage * start_capital:
+                net_return = current_return - transaction_cost * (position_size1 + position_size2)
+                returns.append(net_return)
+                capital += net_return
+                in_position = False
+
+            # Exit on signal
+            if 'Exit' in action:
+                exit_price1 = current_price1
+                exit_price2 = current_price2
+                if position_type == 'Enter Long V, Short MA':
+                    gross_return = (exit_price1 - entry_price1) * position_size1 - (exit_price2 - entry_price2) * position_size2
+                elif position_type == 'Enter Long MA, Short V':
+                    gross_return = (exit_price2 - entry_price2) * position_size2 - (exit_price1 - entry_price1) * position_size1
+                net_return = gross_return - transaction_cost * (position_size1 + position_size2)
+                returns.append(net_return)
+                capital += net_return
+                in_position = False
+
+    total_return = sum(returns)
+    return total_return, returns, capital
+
+# Additional functions for metrics and UI remain the same.
